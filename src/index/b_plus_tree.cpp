@@ -97,11 +97,17 @@ int BPlusTreeNode::find_child(const BPlusTreeNode* child) const {
  * @note 返回key index（同时也是rid index），作为slot no
  */
 int BPlusTreeNode::lower_bound(const char* target) const {
-    // Todo:
-    // 查找当前节点中第一个大于等于target的key，并返回key的位置给上层
-    // 提示: 可以采用多种查找方式，如顺序遍历、二分查找等；使用compare_index_key()函数进行比较
-
-    return -1;
+    int left = 0;
+    int right = get_size();
+    while (left < right) {
+        const int mid = left + (right - left) / 2;
+        if (compare_index_key(get_key(mid), target, file_header_->column_types_, file_header_->column_lengths_) < 0) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
 }
 
 /**
@@ -111,11 +117,17 @@ int BPlusTreeNode::lower_bound(const char* target) const {
  * @note 内部结点用它定位孩子时，返回 0 表示 target 比第一个 key 还小（只会出现在最左侧路径上）。
  */
 int BPlusTreeNode::upper_bound(const char* target) const {
-    // Todo:
-    // 查找当前节点中第一个大于target的key，并返回key的位置给上层
-    // 提示: 可以采用多种查找方式：顺序遍历、二分查找等；使用compare_index_key()函数进行比较
-
-    return -1;
+    int left = 0;
+    int right = get_size();
+    while (left < right) {
+        const int mid = left + (right - left) / 2;
+        if (compare_index_key(get_key(mid), target, file_header_->column_types_, file_header_->column_lengths_) <= 0) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
 }
 
 /**
@@ -127,13 +139,13 @@ int BPlusTreeNode::upper_bound(const char* target) const {
  * @return 目标key是否存在
  */
 bool BPlusTreeNode::leaf_lookup(const char* key, Rid** value) {
-    // Todo:
-    // 1. 在叶子节点中获取目标key所在位置
-    // 2. 判断目标key是否存在
-    // 3. 如果存在，获取key对应的Rid，并赋值给传出参数value
-    // 提示：可以调用lower_bound()和get_rid()函数。
-
-    return false;
+    const int pos = lower_bound(key);
+    if (pos >= get_size() ||
+        compare_index_key(get_key(pos), key, file_header_->column_types_, file_header_->column_lengths_) != 0) {
+        return false;
+    }
+    *value = get_rid(pos);
+    return true;
 }
 
 /**
@@ -142,12 +154,10 @@ bool BPlusTreeNode::leaf_lookup(const char* key, Rid** value) {
  * @return page_id_t 目标key所在的孩子节点（子树）的存储页面编号
  */
 page_id_t BPlusTreeNode::internal_lookup(const char* key) {
-    // Todo:
-    // 1. 查找当前非叶子节点中目标key所在孩子节点（子树）的位置；key 比第一个 key 还小时进入第一个孩子
-    // 2. 获取该孩子节点（子树）所在页面的编号
-    // 3. 返回页面编号
-
-    return -1;
+    // 内部结点中 keys[i] 是孩子 i 的最小键：第一个大于 key 的键的左侧孩子就是目标孩子；
+    // key 比第一个键还小时进入第一个孩子。
+    const int pos = upper_bound(key);
+    return value_at(pos == 0 ? 0 : pos - 1);
 }
 
 /**
@@ -254,12 +264,21 @@ std::pair<IndexNode, bool> BPlusTree::find_leaf_page(const char* key,
                                                      IndexOperation operation,
                                                      Transaction* transaction,
                                                      bool find_first) {
-    // Todo:
-    // 1. 获取根节点
-    // 2. 从根节点开始不断向下查找目标key
-    // 3. 找到包含该key值的叶子结点停止查找，并返回叶子节点
-
-    return {IndexNode{}, false};
+    (void)operation;
+    (void)transaction;
+    IndexNode node = fetch_node(file_header_->root_page_);
+    if (!node.valid()) {
+        throw InternalError("failed to fetch the root page");
+    }
+    while (!node->is_leaf_page()) {
+        const page_id_t child_page = find_first ? node->value_at(0) : node->internal_lookup(key);
+        IndexNode child = fetch_node(child_page);
+        if (!child.valid()) {
+            throw InternalError("failed to fetch the child page");
+        }
+        node = std::move(child);
+    }
+    return {std::move(node), false};
 }
 
 /**
@@ -272,13 +291,18 @@ std::pair<IndexNode, bool> BPlusTree::find_leaf_page(const char* key,
  * @note 非唯一索引中，同一 key 的记录可能因分裂分布在多个相邻叶子里。
  */
 bool BPlusTree::get_value(const char* key, std::vector<Rid>* result, Transaction* transaction) {
-    // Todo:
-    // 1. 获取目标 key 所在的叶子结点
-    // 2. 找到该 key 的全部记录（非唯一索引可能有多条），把 rid 放入 result
-    // 思考：同一 key 的记录跨越多个叶子时，第 1 步找到的叶子是否一定包含第一条？
-    // 提示：IndexNode 离开作用域即 unpin。
-
-    return false;
+    (void)transaction;
+    // [lower_bound(key), upper_bound(key)) 恰好覆盖该 key 的全部索引项（包括跨叶子的重复 key）。
+    const IndexPosition begin = lower_bound(key);
+    const IndexPosition end = upper_bound(key);
+    IndexScan scan(this, begin, end);
+    bool found = false;
+    while (!scan.is_end()) {
+        result->push_back(scan.rid());
+        found = true;
+        scan.next();
+    }
+    return found;
 }
 
 /**
@@ -479,12 +503,36 @@ Rid BPlusTree::get_rid(const IndexPosition& position) const {
  *       IndexScan::next() 产生的位置直接比较。
  */
 IndexPosition BPlusTree::lower_bound(const char* key) {
-    // Todo:
-    // 1. 找到可能包含目标 key 的叶子，并在叶子内定位
-    // 2. 按上面的位置规范调整返回值
-    // 思考：非唯一索引中，“第一个 >= key”的索引项可能在哪个叶子里？
-
-    return IndexPosition{.page_no = INDEX_NO_PAGE, .slot_no = -1};
+    IndexNode leaf = find_leaf_page(key, IndexOperation::Find, nullptr).first;
+    if (!leaf.valid()) {
+        throw InternalError("failed to locate the leaf page for lower_bound");
+    }
+    int slot_no = leaf->lower_bound(key);
+    // 相同 key 的索引项可能横跨多个叶子：第一个 >= key 的项可能在左侧叶子里。
+    while (slot_no == 0) {
+        const page_id_t prev_page = leaf->get_prev_leaf();
+        if (prev_page == INDEX_NO_PAGE || prev_page == INDEX_LEAF_HEADER_PAGE) {
+            break;
+        }
+        IndexNode prev_leaf = fetch_node(prev_page);
+        if (!prev_leaf.valid()) {
+            throw InternalError("failed to fetch the previous leaf page");
+        }
+        const int prev_last = prev_leaf->get_size() - 1;
+        if (prev_last < 0 || compare_index_key(prev_leaf->get_key(prev_last), key, file_header_->column_types_,
+                                               file_header_->column_lengths_) < 0) {
+            break;
+        }
+        leaf = std::move(prev_leaf);
+        slot_no = leaf->lower_bound(key);
+    }
+    if (slot_no >= leaf->get_size()) {
+        if (leaf->get_page_no() == file_header_->last_leaf_) {
+            return leaf_end();
+        }
+        return {.page_no = leaf->get_next_leaf(), .slot_no = 0};
+    }
+    return {.page_no = leaf->get_page_no(), .slot_no = slot_no};
 }
 
 /**
@@ -495,11 +543,28 @@ IndexPosition BPlusTree::lower_bound(const char* key) {
  * @note 位置规范与 lower_bound() 相同。
  */
 IndexPosition BPlusTree::upper_bound(const char* key) {
-    // Todo:
-    // 1. 找到可能包含目标 key 的叶子，并在叶子内定位
-    // 2. 按 lower_bound() 的位置规范调整返回值
-
-    return IndexPosition{.page_no = INDEX_NO_PAGE, .slot_no = -1};
+    IndexNode leaf = find_leaf_page(key, IndexOperation::Find, nullptr).first;
+    if (!leaf.valid()) {
+        throw InternalError("failed to locate the leaf page for upper_bound");
+    }
+    int slot_no = leaf->upper_bound(key);
+    // 当前叶子里的键都不小于等于 key 时不满足“第一个 > key”，继续沿叶子链向右找。
+    while (slot_no >= leaf->get_size()) {
+        if (leaf->get_page_no() == file_header_->last_leaf_) {
+            return leaf_end();
+        }
+        const page_id_t next_page = leaf->get_next_leaf();
+        if (next_page == INDEX_NO_PAGE || next_page == INDEX_LEAF_HEADER_PAGE) {
+            return leaf_end();
+        }
+        IndexNode next_leaf = fetch_node(next_page);
+        if (!next_leaf.valid()) {
+            throw InternalError("failed to fetch the next leaf page");
+        }
+        leaf = std::move(next_leaf);
+        slot_no = leaf->upper_bound(key);
+    }
+    return {.page_no = leaf->get_page_no(), .slot_no = slot_no};
 }
 
 /**

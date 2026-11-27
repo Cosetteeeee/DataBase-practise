@@ -66,6 +66,7 @@ foreach(target IN ITEMS
 endforeach()
 rucbase_add_gtest(lab2_index_layout_test index/index_layout_test.cpp rucbase::core unit lab2)
 rucbase_add_gtest(lab2_index_manager_test index/index_manager_test.cpp rucbase::core unit lab2)
+rucbase_add_gtest(lab2_lookup_only_test index/lookup_only_test.cpp rucbase::core unit lab2)
 
 rucbase_add_gtest(lab3_sort_executor_test execution/sort_test.cpp rucbase::core unit lab3)
 rucbase_add_gtest(lab3_merge_join_test execution/merge_join_test.cpp rucbase::core unit lab3)
